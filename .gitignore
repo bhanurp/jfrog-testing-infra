@@ -6,3 +6,6 @@
 
 # Build
 build
+
+# Environment variables for running local-rt-setup
+local-rt-setup/rt_setup.env

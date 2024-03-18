@@ -19,21 +19,25 @@ import (
 	"time"
 
 	"github.com/mholt/archiver/v3"
+	"github.com/joho/godotenv"
 )
 
-const maxConnectionWaitSeconds = 300
-const waitSleepIntervalSeconds = 10
-const jfrogHomeEnv = "JFROG_HOME"
-const licenseEnv = "RTLIC"
-const localArtifactoryUrl = "http://localhost:8081/artifactory/"
-const localAccessUrl = "http://localhost:8081/access/"
-const defaultUsername = "admin"
-const defaultPassword = "password"
-const defaultVersion = "[RELEASE]"
-const tokenJson = "token.json"
-const generateTokenJson = "generate.token.json"
-const githubEnvFileEnv = "GITHUB_ENV"
-const jfrogLocalAccessToken = "JFROG_TESTS_LOCAL_ACCESS_TOKEN"
+const (
+	maxConnectionWaitSeconds = 500
+	jfrogHomeEnv             = "JFROG_HOME"
+	licenseEnv               = "RTLIC"
+	joinKeyEnv               = "JF_SHARED_SECURITY_JOINKEY"
+	masterKeyEnv             = "JF_SHARED_SECURITY_MASTERKEY"
+	localArtifactoryUrl      = "http://localhost:8081/artifactory/"
+	localAccessUrl           = "http://localhost:8081/access/"
+	defaultUsername          = "admin"
+	defaultPassword          = "password"
+	defaultVersion           = "[RELEASE]"
+	tokenJson                = "token.json"
+	generateTokenJson        = "generate.token.json"
+	githubEnvFileEnv         = "GITHUB_ENV"
+	jfrogLocalAccessToken    = "JFROG_TESTS_LOCAL_ACCESS_TOKEN"
+)
 
 func main() {
 	err := setupLocalArtifactory()
@@ -43,12 +47,24 @@ func main() {
 }
 
 func setupLocalArtifactory() (err error) {
+	err := godotenv.Load()
+	if err != nil {
+	log.Fatal("Error loading .env file")
+	}
 	license := os.Getenv(licenseEnv)
 	if license == "" {
 		return errors.New("no license provided. Aborting. Provide license by setting the '" + licenseEnv + "' env var")
 	}
+	masterKey := os.Getenv(masterKeyEnv)
+	if masterKey == "" {
+		return errors.New("no masterKey provided. Aborting. Provide masterKey by setting the '" + masterKeyEnv + "' env var")
+	}
+	joinKey := os.Getenv(joinKeyEnv)
+	if joinKey == "" {
+		return errors.New("no joinKey provided. Aborting. Provide joinKey by setting the '" + joinKeyEnv + "' env var")
+	}
 
-	jfrogHome, err := prepareJFrogHome()
+	jfrogHome, dirExists, err := prepareJFrogHome()
 	if err != nil {
 		return err
 	}
@@ -71,31 +87,33 @@ func setupLocalArtifactory() (err error) {
 		artifactory6 = majorVer == 6
 	}
 
-	pathToArchive, err := downloadArtifactory(jfrogHome, *rtVersion, artifactory6)
-	if err != nil {
-		return err
-	}
-
-	err = extract(pathToArchive, jfrogHome)
-	if err != nil {
-		return err
-	}
-
-	err = renameArtifactoryDir(jfrogHome)
-	if err != nil {
-		return err
-	}
-
-	if !artifactory6 && isMac() {
-		err = os.Chmod(filepath.Join(jfrogHome, "artifactory", "var"), os.ModePerm)
+	if !*dirExists {
+		pathToArchive, err := downloadArtifactory(jfrogHome, *rtVersion, artifactory6)
 		if err != nil {
 			return err
 		}
-	}
 
-	err = createLicenseFile(jfrogHome, license, artifactory6)
-	if err != nil {
-		return err
+		err = extract(pathToArchive, jfrogHome)
+		if err != nil {
+			return err
+		}
+
+		err = renameArtifactoryDir(jfrogHome)
+		if err != nil {
+			return err
+		}
+
+		if !artifactory6 && isMac() {
+			err = os.Chmod(filepath.Join(jfrogHome, "artifactory", "var"), os.ModePerm)
+			if err != nil {
+				return err
+			}
+		}
+
+		err = createLicenseFile(jfrogHome, license, artifactory6)
+		if err != nil {
+			return err
+		}
 	}
 
 	var binDir string
@@ -158,7 +176,7 @@ func renameArtifactoryDir(jfrogHome string) error {
 }
 
 // Creates and sets the jfrog home directory at the user's home directory, or as provided by the JFROG_HOME environment variable.
-func prepareJFrogHome() (string, error) {
+func prepareJFrogHome() (string, *bool, error) {
 	// Read JFROG_HOME environment variable
 	jfrogHome := os.Getenv(jfrogHomeEnv)
 
@@ -166,33 +184,34 @@ func prepareJFrogHome() (string, error) {
 	if jfrogHome == "" {
 		wd, err := os.UserHomeDir()
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 
 		jfrogHome = filepath.Join(wd, "jfrog_home")
 		if err = os.Setenv(jfrogHomeEnv, jfrogHome); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
 
 	// Create jfrog_home directory if needed
 	exists, err := isExists(jfrogHome)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !exists {
-		return jfrogHome, os.MkdirAll(jfrogHome, os.ModePerm)
+		return jfrogHome, &exists, os.MkdirAll(jfrogHome, os.ModePerm)
 	}
 
 	// If jfrog_home/artifactory directory already exists, return error
 	exists, err = isExists(filepath.Join(jfrogHome, "artifactory"))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if exists {
-		return "", fmt.Errorf("artifactory dir already exists in jfrog home: " + filepath.Join(jfrogHome, "artifactory"))
+		//return "", fmt.Errorf("artifactory dir already exists in jfrog home: " + filepath.Join(jfrogHome, "artifactory"))
+		log.Default().Println("Using existing jfrog home: " + filepath.Join(jfrogHome, "artifactory"))
 	}
-	return jfrogHome, nil
+	return jfrogHome, &exists, nil
 }
 
 func startArtifactory(binDir string) error {
@@ -204,15 +223,16 @@ func startArtifactory(binDir string) error {
 		cmd = exec.Command(filepath.Join(binDir, "artifactoryctl"), "start")
 	}
 	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stderr
+	cmd.Stdout = os.Stdout
 	return cmd.Run()
 }
 
 func waitForArtifactorySuccessfulPing(jfrogHome string, artifactory6 bool) (jfacToken string, err error) {
 	log.Println("Waiting for successful connection with Artifactory...")
-	tryingLog := fmt.Sprintf("Trying again in %d seconds.", waitSleepIntervalSeconds)
+	waitSleepIntervalSeconds := 1
 	for timeElapsed := 0; timeElapsed < maxConnectionWaitSeconds; timeElapsed += waitSleepIntervalSeconds {
-		time.Sleep(time.Second * waitSleepIntervalSeconds)
+		tryingLog := fmt.Sprintf("Trying again in %d seconds.", waitSleepIntervalSeconds)
+		time.Sleep(time.Second * time.Duration(waitSleepIntervalSeconds))
 
 		if !artifactory6 && jfacToken == "" {
 			jfacToken, err = extractGeneratedJfacTokenToken(jfrogHome)
@@ -236,6 +256,7 @@ func waitForArtifactorySuccessfulPing(jfrogHome string, artifactory6 bool) (jfac
 				log.Printf("Artifactory response: %d. %s", response.StatusCode, tryingLog)
 			}
 		}
+		waitSleepIntervalSeconds = waitSleepIntervalSeconds * 2
 	}
 	err = errors.New("could not connect to Artifactory")
 	return
@@ -372,6 +393,7 @@ func setCustomUrlBase() error {
 	log.Println("Setting custom URL base...")
 
 	url := localArtifactoryUrl + "api/system/configuration/baseUrl"
+	fmt.Println("", url)
 	req, err := http.NewRequest("PUT", url, bytes.NewBuffer([]byte(localArtifactoryUrl)))
 	if err != nil {
 		return err

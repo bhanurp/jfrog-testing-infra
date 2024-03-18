@@ -2,7 +2,10 @@ module github.com/jfrog/jfrog-testing-infra/local-rt-setup
 
 go 1.19
 
-require github.com/mholt/archiver/v3 v3.5.1
+require (
+	github.com/joho/godotenv v1.5.1
+	github.com/mholt/archiver/v3 v3.5.1
+)
 
 require (
 	github.com/andybalholm/brotli v1.0.1 // indirect
